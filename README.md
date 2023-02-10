@@ -13,7 +13,9 @@ had the following problems when I tried to run it on my machine, which this repo
 This repo does just inference and nice visualization with the provided pretrained models. No training, no evaluation metrics. 
 
 ## Data and Models
-Download the [pretrained model](https://drive.google.com/file/d/1pHWjmhKMG4ffCrpcsp_MTXMJXhgl3kF9/view) (as per the PSMNet repo) and put it in the log folder in the base directory. 
+For disparity prediction, download the [pretrained model](https://drive.google.com/file/d/1pHWjmhKMG4ffCrpcsp_MTXMJXhgl3kF9/view) (as per the PSMNet repo) and put it in the log folder in the base directory. 
+For the Frustum model, download the pretrained [Frustum_V1 model](https://drive.google.com/file/d/1qhCxw6uHqQ4SAkxIuBi-QCKqLmTGiNhP/view), 
+pretrained by the pseudo-lidar folks.  Also put it in the log folder in the base directory. 
 
 Download the KITTI dataset, from the official site. The KITTI dataset is assumed
 to lie in the base directory of the repo. You can symlink it to your KITTI location. 
