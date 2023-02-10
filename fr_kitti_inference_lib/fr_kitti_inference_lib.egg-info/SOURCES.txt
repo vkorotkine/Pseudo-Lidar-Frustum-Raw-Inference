@@ -1,0 +1,5 @@
+setup.py
+fr_kitti_inference_lib.egg-info/PKG-INFO
+fr_kitti_inference_lib.egg-info/SOURCES.txt
+fr_kitti_inference_lib.egg-info/dependency_links.txt
+fr_kitti_inference_lib.egg-info/top_level.txt

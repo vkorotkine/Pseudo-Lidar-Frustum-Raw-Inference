@@ -1,0 +1,226 @@
+from __future__ import print_function
+import argparse
+import os
+import random
+import torch
+import torch.nn as nn
+import torch.nn.parallel
+import torch.backends.cudnn as cudnn
+import torch.optim as optim
+import torch.utils.data
+from torch.autograd import Variable
+import torch.nn.functional as F
+import skimage
+import skimage.io
+import skimage.transform
+import numpy as np
+import time
+import math
+import cv2
+
+import fr_kitti_inference_lib.pseudo_lidar.preprocessing.kitti_util as kitti_util_pl
+from fr_kitti_inference_lib.pseudo_lidar.psmnet.utils import preprocess
+from fr_kitti_inference_lib.pseudo_lidar.psmnet.models import *
+from fr_kitti_inference_lib.pseudo_lidar.psmnet.dataloader import (
+    KITTI_raw_loader as DA_raw,
+)
+from fr_kitti_inference_lib.pseudo_lidar.psmnet.dataloader import (
+    KITTI_submission_loader as DA_object,
+)
+
+from tqdm import tqdm
+
+from fr_kitti_inference_lib.pseudo_lidar.disparity_prediction import predict_disparity
+from fr_kitti_inference_lib.pseudo_lidar.lidar_generation import lidar_from_disp
+from fr_kitti_inference_lib.data_preparation import (
+    extract_frustum_data_rgb_detection,
+    create_rgb_detection_file,
+    create_rgb_detection_file_object,
+)
+
+from fr_kitti_inference_lib.test import (
+    test_from_rgb_detection,
+)
+import pykitti
+
+import fr_kitti_inference_lib.train.provider as provider
+from fr_kitti_inference_lib.kitti_utils.kitti_object import kitti_object
+from matplotlib import pyplot as plt
+
+parser = argparse.ArgumentParser(description="PSMNet")
+parser.add_argument(
+    "--save_figure",
+    default=True,
+    action="store_true",
+    help="if true, save the numpy file, not the png file",
+)
+args = parser.parse_args()
+
+# %%
+
+type = "pseudo_lidar"
+is_depth = False
+
+kitti_type = "raw"
+image_idx = 45
+
+
+# kitti_type = "object"
+# image_idx = 2
+
+# calib_dir = "./dataset/KITTI/object/testing/calib"
+# calib_file = "{}/{}.txt".format(calib_dir, f"{str(5).zfill(6)}")
+# calib = kitti_util_pl.Calibration(calib_file)
+
+
+# dataset_raw: pykitti.raw = pykitti.raw("./dataset/KITTI/raw/", "2011_09_26", "0013")
+# calib = kitti_util_pl.CalibrationRaw(dataset_raw)
+
+
+if kitti_type == "raw":
+    split = None
+
+    date = "2011_09_26"
+    drive = "0051"
+    savedir_pseudo_lidar = f"./dataset/KITTI/raw/pseudo-lidar_velodyne/{date}/{drive}"
+    basedir_ds = "./dataset/KITTI/raw/"
+
+    dataset: pykitti.raw = pykitti.raw(basedir_ds, date, drive)
+    calib = kitti_util_pl.CalibrationRaw(dataset)
+
+if kitti_type == "object":
+    date = None
+    drive = None
+    split = "training"
+    basedir_ds = "./dataset/KITTI/object/"
+    dataset: kitti_object = kitti_object(basedir_ds, split)
+
+    savedir_pseudo_lidar = f"./dataset/KITTI/object/{split}/pseudo-lidar_velodyne/"
+
+    calib_dir = f"./dataset/KITTI/object/{split}/calib"
+
+    calib_file = "{}/{}.txt".format(calib_dir, f"{str(image_idx).zfill(6)}")
+    calib = kitti_util_pl.Calibration(calib_file)
+
+
+if type == "pseudo_lidar":
+    if kitti_type == "raw":
+        test_left_img, test_right_img = DA_raw.dataloader(basedir_ds, date, drive)
+    if kitti_type == "object":
+        test_left_img, test_right_img = DA_object.dataloader(
+            f"./dataset/KITTI/object/{split}/"
+        )
+    disp_map = predict_disparity(test_left_img[image_idx], test_right_img[image_idx])
+
+    lidar = lidar_from_disp(disp_map, is_depth, calib)
+    if kitti_type == "raw":
+        predix = f"{str(image_idx).zfill(10)}"
+    if kitti_type == "object":
+        predix = f"{str(image_idx).zfill(6)}"
+    if not os.path.isdir(savedir_pseudo_lidar):
+        os.makedirs(savedir_pseudo_lidar)
+    lidar.tofile("{}/{}.bin".format(savedir_pseudo_lidar, predix))
+
+# Extract Frustums
+
+frustum_dir = "./results/frustum_prepared_data/"
+
+
+file_dir = os.path.join(frustum_dir, f"frustum_{kitti_type}_{type}")
+if not os.path.isdir(file_dir):
+    os.makedirs(file_dir)
+type_whitelist = ["Car", "Pedestrian", "Cyclist"]
+
+if kitti_type == "raw":
+    create_rgb_detection_file(date, drive, image_idx_list=[image_idx])
+    frustum_data_path = os.path.join(file_dir, f"{date}_{drive}.pickle")
+if kitti_type == "object":
+    create_rgb_detection_file_object(split, image_idx_list=[image_idx])
+    frustum_data_path = os.path.join(file_dir, f"{split}.pickle")
+
+extract_frustum_data_rgb_detection(
+    output_filename=frustum_data_path,
+    viz=False,
+    type_whitelist=type_whitelist,
+    date=date,
+    drive=drive,
+    split=split,
+    type=type,
+    kitti_type=kitti_type,
+)
+
+# frustum_data_path = (
+#     f"{frustum_dir}/frustum_all_{kitti_type}_{type}_rgb/{date}_{drive}.pickle"
+# )
+
+# output_dir = f"results/detection_results/detection_results_{date}_{drive}_{type}"
+
+if kitti_type == "raw":
+    results_dir = f"./results/detection_results/detection_results_{date}_{drive}_{type}"
+if kitti_type == "object":
+    results_dir = f"./results/detection_results/detection_results_{split}_{type}"
+
+frustum_dataset = provider.FrustumDataset(
+    npoints=1024,
+    split=None,
+    rotate_to_center=True,
+    overwritten_data_path=frustum_data_path,
+    from_rgb_detection=True,
+    one_hot=True,
+)
+if not frustum_dataset.type_list:
+    meow = 1
+
+test_from_rgb_detection(
+    results_dir + ".pickle", results_dir, kitti_type, frustum_dataset
+)
+
+# %% Visualize
+if kitti_type == "raw":
+    label_filename = os.path.join(results_dir, f"{str(image_idx).zfill(10)}.txt")
+if kitti_type == "object":
+    label_filename = os.path.join(results_dir, f"{str(image_idx).zfill(6)}.txt")
+
+import fr_kitti_inference_lib.kitti_utils.kitti_util as kitti_utils_fr
+
+objects_pseudo_lidar = kitti_utils_fr.read_label(label_filename)
+import cv2
+
+if kitti_type == "raw":
+    img = np.array(dataset.get_cam2(image_idx))
+if kitti_type == "object":
+    img = np.array(dataset.get_image(image_idx))
+
+img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+img_height, img_width, img_channel = img.shape
+
+img = img.copy()
+for lv1, obj in enumerate(objects_pseudo_lidar):
+    #  print(obj)
+    if obj.type == "DontCare":
+        continue
+    box3d_pts_2d, box3d_pts_3d = kitti_utils_fr.compute_box_3d(obj, calib.P)
+    if box3d_pts_2d is not None:
+        img = kitti_utils_fr.draw_projected_box3d(img, box3d_pts_2d)
+    cv2.rectangle(
+        img,
+        (int(obj.xmin), int(obj.ymin)),
+        (int(obj.xmax), int(obj.ymax)),
+        (0, 255, 0),
+        2,
+    )
+
+if type == "pseudo_lidar":
+
+    plt.figure()
+    plt.imshow(disp_map, cmap="plasma")
+
+plt.figure()
+plt.imshow(img)
+# fig, axs = plt.subplots(2, 1)
+# axs[0].imshow(img)
+# axs[1].imshow(np.array(cv2.imread(test_right_img[image_idx])))
+plt.show()
+# cv2.waitKey(0) & 0xFF
+
+# %%
