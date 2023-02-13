@@ -45,7 +45,9 @@ but any one will do. Just make sure they are in the right folder and format.
 ## Installation
 Tested on Python 3.6.8, Ubuntu 20.04, CUDA 11.3. Recommend using pyenv to manage python version. 
 ```
+pip install --upgrade pip
 pip install -r requirements.txt
+pip install torch==1.10.0+cu111 torchvision==0.11.0+cu111 torchaudio==0.10.0 -f https://download.pytorch.org/whl/torch_stable.html
 ```
 to install dependencies, and 
 ```
